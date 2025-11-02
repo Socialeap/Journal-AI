@@ -1,0 +1,7 @@
+{
+  "name": "AI Journal with Google Sheets",
+  "description": "An AI-powered journaling app that stores entries in Google Sheets. It provides AI-generated summaries and insights, and features a real-time conversational assistant using Gemini's Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

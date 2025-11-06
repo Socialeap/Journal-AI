@@ -1,5 +1,4 @@
 
-
 import { useState, useRef, useCallback } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
 import { createBlob, decode, decodeAudioData } from '../utils/audioUtils';
@@ -18,43 +17,36 @@ interface LiveSession {
 
 const findEntriesTool: FunctionDeclaration = {
     name: 'findEntries',
-    description: 'Searches journal entries. Can filter by a text query, a date range, or both. Returns matching entries.',
+    description: 'Searches the user\'s journal for entries matching a query. Returns a list of matching entries with their content and row number.',
     parameters: {
         type: Type.OBJECT,
         properties: {
             query: {
                 type: Type.STRING,
-                description: 'Optional keyword or phrase to search for in the entry text. If empty, returns recent entries.',
-            },
-            startDate: {
-                type: Type.STRING,
-                description: 'Optional start date for the search range in YYYY-MM-DD format. Filters entries with a due date on or after this date.',
-            },
-            endDate: {
-                type: Type.STRING,
-                description: 'Optional end date for the search range in YYYY-MM-DD format. Filters entries with a due date on or before this date.',
+                description: 'The keyword or phrase to search for in the journal entries. If empty, returns the 5 most recent entries.',
             },
         },
+        required: ['query'],
     },
 };
 
 const updateJournalEntryTool: FunctionDeclaration = {
     name: 'updateJournalEntry',
-    description: 'Updates a specific field of a journal entry in the spreadsheet AFTER you have its row number.',
+    description: 'Updates a specific field of a journal entry in the spreadsheet.',
     parameters: {
         type: Type.OBJECT,
         properties: {
             row: {
                 type: Type.INTEGER,
-                description: 'The row number of the entry to update. CRITICAL: This number MUST be obtained by first calling the `findEntries` tool.',
+                description: 'The row number of the entry to update.',
             },
             field: {
                 type: Type.STRING,
-                description: 'The column/field to update. Valid options are: "entry", "tags", "type", "taskStatus", "dueDate", "priority".',
+                description: 'The field to update. Must be one of: "entry", "tags", "type", "taskStatus", "dueDate", "priority".',
             },
             value: {
                 type: Type.STRING,
-                description: 'The new value for the specified field. For due dates, use YYYY-MM-DD format.',
+                description: 'The new value for the field.',
             },
         },
         required: ['row', 'field', 'value'],
@@ -65,7 +57,6 @@ const updateJournalEntryTool: FunctionDeclaration = {
 export const useGeminiLive = (spreadsheetId: string) => {
     const [sessionState, setSessionState] = useState<SessionState>('IDLE');
     const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-    const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null);
 
     const sessionRef = useRef<LiveSession | null>(null);
     const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -75,7 +66,6 @@ export const useGeminiLive = (spreadsheetId: string) => {
     const nextAudioStartTimeRef = useRef<number>(0);
     const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
     const currentTranscriptRef = useRef<TranscriptEntry[]>([]);
-    const analyserNodeRef = useRef<AnalyserNode | null>(null);
 
     const addTranscript = (entry: TranscriptEntry) => {
         currentTranscriptRef.current = [...currentTranscriptRef.current, entry];
@@ -111,8 +101,6 @@ export const useGeminiLive = (spreadsheetId: string) => {
         }
         audioSourcesRef.current.forEach(source => source.stop());
         audioSourcesRef.current.clear();
-        analyserNodeRef.current = null;
-        setAnalyserNode(null);
         setSessionState('IDLE');
     }, []);
 
@@ -129,47 +117,26 @@ export const useGeminiLive = (spreadsheetId: string) => {
             inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
             outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
             
-            // Create and configure the AnalyserNode for visualization
-            const analyser = outputAudioContextRef.current.createAnalyser();
-            analyser.fftSize = 256;
-            analyserNodeRef.current = analyser;
-            setAnalyserNode(analyser);
-
-            const today = new Date().toISOString().slice(0, 10); // Get YYYY-MM-DD
-
-            const systemInstruction = `You are a helpful and empathetic journal assistant. Your primary role is to help the user manage their journal by finding and updating entries using the provided tools.
-
-**HANDLING DATES:**
-- **Today's date is ${today}.**
-- When a user asks about a time period (e.g., "next week", "this month", "in 2025"), you MUST calculate the 'startDate' and 'endDate' in YYYY-MM-DD format and use them in the 'findEntries' tool.
-- For "next week," calculate a 7-day period starting from tomorrow.
-- For "2025," the range would be startDate: '2025-01-01', endDate: '2025-12-31'.
-- Do not just pass the user's text like "next week" into the query parameter. Use the date parameters for accurate filtering.
-
-**CRITICAL WORKFLOW FOR UPDATES:**
-You MUST follow this two-step process for any request that involves modifying an existing entry:
-1.  **FIND:** First, use the 'findEntries' tool to locate the specific entry the user is talking about. Use keywords from their request in the 'query' parameter. This tool will return the entry's content and, most importantly, its 'row' number.
-2.  **UPDATE:** Once you have the correct 'row' number from the 'findEntries' result, use the 'updateJournalEntry' tool to make the change. You will need the 'row', the specific 'field' to change, and the 'new value'.
-
-**EXAMPLE CONVERSATION FLOW (Date Search):**
-- **User:** "What do I have due next week?"
-- **YOU (Internal thought):** Today is ${today}. "Next week" starts tomorrow. I will calculate the date range and use the 'findEntries' tool.
-- **YOU (Tool Call):** \`findEntries({ startDate: "YYYY-MM-DD", endDate: "YYYY-MM-DD" })\`
-- **Tool Response:** \`[ ... list of tasks ... ]\`
-- **YOU (Spoken to user):** "Here are the tasks you have due next week: ..."
+            const systemInstruction = `You are a helpful and empathetic journal assistant.
+Your primary role is to help the user manage their journal, which is stored in a Google Sheet.
+You can find entries and update them using the provided tools.
 
 **IMPORTANT RULES:**
-- **NEVER GUESS ROW NUMBERS.** Always get the row number from the \`findEntries\` tool first.
-- If \`findEntries\` returns multiple results, ask the user to clarify which one they mean before you update anything.
-- Be conversational and concise in your spoken responses.
+- Before updating any entry, you MUST first use the 'findEntries' tool to locate the correct row number.
+- Always confirm the action with the user before making an update.
+- Be conversational and concise.
 
-**Spreadsheet Schema & Fields you can update:**
-- 'entry': The main text of the journal entry.
-- 'tags': Comma-separated keywords.
-- 'type': 'personal', 'work', 'task', 'note'.
-- 'taskStatus': 'todo', 'in-progress', 'done', 'none'.
-- 'dueDate': Date in YYYY-MM-DD format.
-- 'priority': 'low', 'medium', 'high', 'none'.`;
+**Spreadsheet Schema:**
+- Column A: ID (auto-generated)
+- Column B: Date Created (auto-generated)
+- Column C: Entry (The main text of the journal)
+- Column D: Tags (Comma-separated keywords)
+- Column E: Type ('personal', 'work', 'task', 'note')
+- Column F: Status ('todo', 'in-progress', 'done', 'none')
+- Column G: Due Date (YYYY-MM-DD)
+- Column H: Priority ('low', 'medium', 'high', 'none')
+- Column I: AI Summary (auto-generated)
+- Column J: AI Insight (auto-generated)`;
 
             const sessionPromise = ai.live.connect({
                 model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -232,17 +199,13 @@ You MUST follow this two-step process for any request that involves modifying an
                                 let result;
                                 try {
                                     if (fc.name === 'findEntries') {
-                                        const { query, startDate, endDate } = fc.args;
-                                        addTranscript({ source: 'system', text: `Searching journal...` });
-                                        const found = await Sheets.findEntries(
-                                            spreadsheetId, 
-                                            query ? String(query) : '',
-                                            startDate ? String(startDate) : undefined,
-                                            endDate ? String(endDate) : undefined
-                                        );
+                                        addTranscript({ source: 'system', text: `Searching journal for "${fc.args.query}"...` });
+                                        // FIX: Cast query to string to satisfy findEntries function signature.
+                                        const found = await Sheets.findEntries(spreadsheetId, String(fc.args.query));
                                         result = { result: JSON.stringify(found) };
                                     } else if (fc.name === 'updateJournalEntry') {
                                         addTranscript({ source: 'system', text: `Updating ${fc.args.field} to "${fc.args.value}" on row ${fc.args.row}...` });
+                                        // FIX: Cast arguments to their expected types for updateJournalEntry.
                                         await Sheets.updateJournalEntry(spreadsheetId, Number(fc.args.row), String(fc.args.field) as any, String(fc.args.value));
                                         result = { result: "Update successful." };
                                     }
@@ -252,6 +215,7 @@ You MUST follow this two-step process for any request that involves modifying an
                                 }
 
                                 sessionPromise.then(session => {
+                                    // FIX: Use session.sendToolResponse and provide the correct payload structure.
                                     session.sendToolResponse({
                                         functionResponses: { id: fc.id, name: fc.name, response: result }
                                     });
@@ -263,34 +227,18 @@ You MUST follow this two-step process for any request that involves modifying an
                         const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
                         if (audioData) {
                             const outputCtx = outputAudioContextRef.current;
-                            const analyser = analyserNodeRef.current;
-                            if (!outputCtx || !analyser) return;
+                            if (!outputCtx) return;
 
-                            // FIX: Resume AudioContext if suspended. Browsers often suspend AudioContext
-                            // until a user interaction, which can cause audio to not play.
-                            if (outputCtx.state === 'suspended') {
-                                await outputCtx.resume();
-                            }
-
-                            try {
-                                nextAudioStartTimeRef.current = Math.max(nextAudioStartTimeRef.current, outputCtx.currentTime);
-                                const audioBuffer = await decodeAudioData(decode(audioData), outputCtx, 24000, 1);
-                                const source = outputCtx.createBufferSource();
-                                source.buffer = audioBuffer;
-                                
-                                // Connect source to analyser, and analyser to destination
-                                source.connect(analyser);
-                                analyser.connect(outputCtx.destination);
-                                
-                                source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
-                                source.start(nextAudioStartTimeRef.current);
-                                nextAudioStartTimeRef.current += audioBuffer.duration;
-                                audioSourcesRef.current.add(source);
-                            } catch(e) {
-                                console.error("Error processing or playing audio chunk:", e);
-                            }
+                            nextAudioStartTimeRef.current = Math.max(nextAudioStartTimeRef.current, outputCtx.currentTime);
+                            const audioBuffer = await decodeAudioData(decode(audioData), outputCtx, 24000, 1);
+                            const source = outputCtx.createBufferSource();
+                            source.buffer = audioBuffer;
+                            source.connect(outputCtx.destination);
+                            source.addEventListener('ended', () => audioSourcesRef.current.delete(source));
+                            source.start(nextAudioStartTimeRef.current);
+                            nextAudioStartTimeRef.current += audioBuffer.duration;
+                            audioSourcesRef.current.add(source);
                         }
-
                         if (message.serverContent?.interrupted) {
                            audioSourcesRef.current.forEach(source => source.stop());
                            audioSourcesRef.current.clear();
@@ -315,5 +263,5 @@ You MUST follow this two-step process for any request that involves modifying an
         }
     }, [stopSession, spreadsheetId]);
     
-    return { sessionState, transcript, analyserNode, startSession, stopSession };
+    return { sessionState, transcript, startSession, stopSession };
 };

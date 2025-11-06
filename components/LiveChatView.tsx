@@ -1,10 +1,9 @@
 
-
 import React from 'react';
 import { useGeminiLive } from '../hooks/useGeminiLive';
 import { MicIcon } from './icons/MicIcon';
-import type { TranscriptEntry } from '../types';
 import { VoiceVisualizer } from './VoiceVisualizer';
+import type { TranscriptEntry } from '../types';
 
 interface LiveChatViewProps {
   spreadsheetId: string;
@@ -14,21 +13,20 @@ const TranscriptLine: React.FC<{ entry: TranscriptEntry }> = ({ entry }) => {
     if (entry.source === 'system') {
         return (
             <div className="text-center my-2">
-                <span className="px-3 py-1 bg-slate-700 text-slate-400 text-xs rounded-full">
+                <span className="px-3 py-1 bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 text-xs rounded-full">
                     {entry.text}
                 </span>
             </div>
         );
     }
 
-    const isUser = entry.source === 'user';
     return (
-        <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+        <div className={`flex ${entry.source === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
-                className={`max-w-md p-3 rounded-lg shadow-sm ${
-                isUser
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-700 text-slate-200'
+                className={`max-w-md p-3 rounded-lg ${
+                entry.source === 'user'
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200'
                 }`}
             >
                 {entry.text}
@@ -42,7 +40,7 @@ export const LiveChatView: React.FC<LiveChatViewProps> = ({ spreadsheetId }) => 
   const {
     sessionState,
     transcript,
-    analyserNode,
+    micVolume,
     startSession,
     stopSession,
   } = useGeminiLive(spreadsheetId);
@@ -54,71 +52,52 @@ export const LiveChatView: React.FC<LiveChatViewProps> = ({ spreadsheetId }) => 
       case 'CONNECTING':
         return { text: 'Connecting...', color: 'bg-yellow-500', disabled: true };
       case 'LISTENING':
-        return { text: 'Stop Conversation', color: 'bg-red-600 hover:bg-red-700', disabled: false };
+        return { text: 'Listening...', color: 'bg-green-500', disabled: false };
       case 'PROCESSING':
-        return { text: 'Processing...', color: 'bg-gray-500', disabled: true };
+        return { text: 'Processing...', color: 'bg-purple-500', disabled: true };
       case 'ERROR':
-        return { text: 'Start Conversation', color: 'bg-blue-600 hover:bg-blue-700', disabled: false };
+        return { text: 'Error - Click to Restart', color: 'bg-red-600 hover:bg-red-700', disabled: false };
       default:
-        return { text: 'Start Conversation', color: 'bg-blue-600 hover:bg-blue-700', disabled: false };
+        return { text: 'Start', color: 'bg-slate-500', disabled: true };
     }
   };
 
-  const buttonState = getButtonState();
-  const isSessionActive = sessionState === 'LISTENING' || sessionState === 'PROCESSING' || sessionState === 'CONNECTING';
-
-  const handleButtonClick = () => {
-    if (sessionState === 'IDLE' || sessionState === 'ERROR') {
-      startSession();
-    } else if (sessionState === 'LISTENING') {
-      stopSession();
-    }
-  };
+  const { text, color, disabled } = getButtonState();
 
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)] bg-slate-900 rounded-lg shadow-xl overflow-hidden">
-      {/* Top Part: Main visualizer area */}
-      <div className="flex-grow relative flex items-center justify-center p-4">
-        <VoiceVisualizer analyserNode={analyserNode} />
-      </div>
-
-      {/* Bottom Part: Transcript and Controls */}
-      <div className="flex-shrink-0 bg-slate-800/50 backdrop-blur-sm border-t border-slate-700">
-        
-        {/* Scrollable Transcript Area */}
-        <div className="h-40 overflow-y-auto p-4 space-y-4">
-          {!isSessionActive && transcript.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center text-slate-400">
-              <p>Click the microphone to talk with your AI assistant.</p>
-            </div>
-          )}
-          {transcript.map((entry, index) => (
+    <div className="max-w-2xl mx-auto">
+      <div className="h-96 bg-slate-50 dark:bg-slate-800 rounded-lg p-4 space-y-4 overflow-y-auto flex flex-col-reverse">
+        {transcript.length === 0 && (
+          <div className="flex-grow flex items-center justify-center">
+            <p className="text-slate-500 dark:text-slate-400">
+              The conversation transcript will appear here.
+            </p>
+          </div>
+        )}
+        <div className="space-y-4">
+          {[...transcript].reverse().map((entry, index) => (
             <TranscriptLine key={index} entry={entry} />
           ))}
         </div>
-        
-        {/* Controls */}
-        <div className="p-4 flex flex-col items-center">
-          <button
-            onClick={handleButtonClick}
-            disabled={buttonState.disabled}
-            className={`px-8 py-4 rounded-full text-white font-bold transition-all duration-300 flex items-center space-x-3 shadow-lg transform hover:scale-105 disabled:bg-slate-500 disabled:transform-none ${buttonState.color}`}
-          >
-            <MicIcon className="w-6 h-6" />
-            <span>{buttonState.text}</span>
-          </button>
-          {sessionState === 'LISTENING' && (
-            <p className="text-sm text-slate-400 mt-2 animate-pulse">
-              Listening...
-            </p>
-          )}
-          {sessionState === 'ERROR' && (
-            <p className="text-sm text-red-400 mt-2">
-              An error occurred. Please try again.
-            </p>
-          )}
-        </div>
       </div>
-    </div>
-  );
-};
+
+      <div className="mt-8 flex flex-col items-center">
+        <div className="h-12 flex items-center justify-center mb-4">
+            {sessionState === 'LISTENING' ? (
+                <VoiceVisualizer volume={micVolume} />
+            ) : (
+                <span className="text-slate-500 dark:text-slate-400">
+                    {sessionState === 'IDLE' ? 'Click to start' : text}
+                </span>
+            )}
+        </div>
+        <button
+            onClick={sessionState === 'IDLE' || sessionState === 'ERROR' ? startSession : stopSession}
+            disabled={disabled}
+            aria-label={sessionState === 'IDLE' ? 'Start conversation' : 'Stop conversation'}
+            className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 ${color} text-white shadow-lg focus:outline-none focus:ring-4 focus:ring-offset-2 dark:focus:ring-offset-slate-900 ${
+                sessionState === 'LISTENING' ? 'ring-4 ring-green-400/50' : `focus:ring-blue-500/50`
+            }`}
+        >
+          <MicIcon className="w-8 h-8" />
+        

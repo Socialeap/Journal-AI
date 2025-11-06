@@ -1,8 +1,11 @@
 // This service handles the Google Sign-In and authentication logic.
-import { GOOGLE_CLIENT_ID } from '../config';
+import { GOOGLE_CLIENT_ID, GOOGLE_DEVELOPER_KEY } from '../config';
 
-const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive';
 
+// FIX: Replaced `declare const google: any` with a more specific type declaration
+// for the Google Identity Services client to resolve TypeScript errors.
+// This object is provided by the Google Identity Services script loaded in the browser.
 declare namespace google {
   namespace accounts {
     namespace oauth2 {
@@ -11,7 +14,6 @@ declare namespace google {
       }
       interface TokenResponse {
         access_token: string;
-        error?: any;
       }
       interface TokenClientConfig {
         client_id: string;
@@ -26,14 +28,9 @@ declare namespace google {
 
 let tokenClient: google.accounts.oauth2.TokenClient | null = null;
 let accessToken: string | null = null;
-let authChangeCallback: (() => void) | null = null;
-const HAS_SIGNED_IN_KEY = 'google_has_signed_in_once';
 
-
-// The initClient now takes two callbacks to decouple client readiness from auth state.
-export const initClient = (onReady: () => void, onAuthChange: () => void) => {
-    authChangeCallback = onAuthChange;
-
+// Callback function to initialize the Google API client
+export const initClient = (callback: () => void) => {
     if (typeof google === 'undefined' || typeof google.accounts === 'undefined') {
         console.error("Google Identity Services script not loaded.");
         return;
@@ -45,35 +42,18 @@ export const initClient = (onReady: () => void, onAuthChange: () => void) => {
         callback: (tokenResponse) => {
             if (tokenResponse && tokenResponse.access_token) {
                 accessToken = tokenResponse.access_token;
-                localStorage.setItem(HAS_SIGNED_IN_KEY, 'true');
-                if (authChangeCallback) authChangeCallback();
-            } else if (tokenResponse.error) {
-                // This can happen if a silent login fails (e.g., expired session).
-                // Treat this as being signed out.
-                console.warn("Silent auth failed:", tokenResponse.error);
-                accessToken = null;
-                localStorage.removeItem(HAS_SIGNED_IN_KEY);
-                if (authChangeCallback) authChangeCallback();
+                callback();
             }
         },
     });
-
-    // On load, check if the user has signed in before.
-    if (localStorage.getItem(HAS_SIGNED_IN_KEY) === 'true') {
-        // An empty prompt attempts a silent, non-interactive token request.
-        tokenClient.requestAccessToken({ prompt: '' });
-    }
-    
-    // Signal that the Google client is ready to be used.
-    onReady();
 };
 
 export const signIn = () => {
     if (!tokenClient) {
         throw new Error('Google API client not initialized.');
     }
-    // The 'consent' prompt is important for the first time to ensure the app
-    // gets a refresh token for long-term offline access.
+    // Prompt the user to select a Google Account and ask for consent to share their data
+    // when establishing a new session.
     tokenClient.requestAccessToken({ prompt: 'consent' });
 };
 
@@ -81,14 +61,8 @@ export const signOut = () => {
     if (accessToken) {
         google.accounts.oauth2.revoke(accessToken, () => {
             console.log('Access token revoked.');
-            accessToken = null;
-            localStorage.removeItem(HAS_SIGNED_IN_KEY);
-            if (authChangeCallback) authChangeCallback();
         });
-    } else {
-        // If there's no access token, just clear the flag and notify.
-        localStorage.removeItem(HAS_SIGNED_IN_KEY);
-        if (authChangeCallback) authChangeCallback();
+        accessToken = null;
     }
 };
 
@@ -100,40 +74,58 @@ export const isUserSignedIn = (): boolean => {
     return accessToken !== null;
 };
 
-export interface DriveFile {
-    id: string;
-    name: string;
-}
+// --- Google Picker API Functions ---
 
-export const findJournalSheetsInDrive = async (): Promise<DriveFile[]> => {
-    const accessToken = getAccessToken();
-    if (!accessToken) throw new Error('Not authenticated');
+let pickerApiLoaded = false;
 
-    const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and name contains 'AI Journal Sheet' and trashed = false");
-    const fields = encodeURIComponent("files(id,name)");
-    const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=${fields}`;
-
-    const response = await fetch(url, {
-        headers: {
-            'Authorization': `Bearer ${accessToken}`,
-        },
-    });
-
-    if (!response.ok) {
-        // Handle specific API errors for better user guidance
-        if (response.status === 403) {
-            const errorData = await response.json().catch(() => null); // Safely parse JSON
-            // Check if the error message indicates the API is not enabled
-            if (errorData?.error?.message?.includes('Drive API has not been used') || errorData?.error?.details?.[0]?.reason === 'SERVICE_DISABLED') {
-                throw new Error('The Google Drive API is not enabled for this project. Please go to your Google Cloud Console, search for the "Google Drive API," and enable it.');
-            }
-            throw new Error('Permission denied to search Google Drive. Please try signing out and signing back in to grant the necessary permissions.');
+// Loads the Google Picker API script
+const loadPickerApi = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+        if (typeof (window as any).gapi === 'undefined') {
+            return reject(new Error("Google API script (gapi) not loaded."));
         }
+        (window as any).gapi.load('picker', { 'callback': () => {
+            pickerApiLoaded = true;
+            resolve();
+        }});
+    });
+};
 
-        console.error("Failed to search for files in Google Drive", response);
-        throw new Error('An unexpected error occurred while searching for journal sheets in Google Drive.');
+// Shows the Google Picker dialog and returns the selected sheet
+export const showPicker = async (): Promise<{id: string, name: string}> => {
+    if (!pickerApiLoaded) {
+        await loadPickerApi();
+    }
+    
+    const token = getAccessToken();
+    const developerKey = GOOGLE_DEVELOPER_KEY;
+
+    if (!token) {
+        throw new Error("Authentication token not found.");
+    }
+    if (!developerKey || developerKey === 'YOUR_DEVELOPER_KEY_HERE') {
+        throw new Error("Google Developer Key is not configured in config.ts. Please add it to enable file selection.");
     }
 
-    const data = await response.json();
-    return data.files || [];
+    return new Promise((resolve, reject) => {
+        const view = new (window as any).google.picker.View((window as any).google.picker.ViewId.SPREADSHEETS);
+        
+        const picker = new (window as any).google.picker.PickerBuilder()
+            .addView(view)
+            .setOAuthToken(token)
+            .setDeveloperKey(developerKey)
+            .setCallback((data: any) => {
+                const action = data[(window as any).google.picker.Response.ACTION];
+                if (action === (window as any).google.picker.Action.PICKED) {
+                    const doc = data[(window as any).google.picker.Response.DOCUMENTS][0];
+                    const id = doc[(window as any).google.picker.Document.ID];
+                    const name = doc[(window as any).google.picker.Document.NAME];
+                    resolve({ id, name });
+                } else if (action === (window as any).google.picker.Action.CANCEL) {
+                    reject(new Error("User cancelled the file selection."));
+                }
+            })
+            .build();
+        picker.setVisible(true);
+    });
 };

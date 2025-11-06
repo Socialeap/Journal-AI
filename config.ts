@@ -28,6 +28,18 @@ export const GOOGLE_CLIENT_ID = '562552051436-ivq953n032gbnb8m0tofem38co0is8bd.a
 // 6. Click "Save". It might take a few minutes for the changes to take effect.
 // ---
 
+// --- Google Picker API Key ---
+// TODO: Replace with your actual Google Developer API Key.
+// This key is required to use the Google Picker API (the file open dialog).
+//
+// To get this key:
+// 1. Go to https://console.cloud.google.com/apis/credentials
+// 2. Click "+ CREATE CREDENTIALS" and select "API key".
+// 3. Copy the key and paste it here.
+// 4. (Recommended) Restrict the key. Click the key name, and under
+//    "API restrictions", select "Restrict key" and choose "Google Picker API".
+export const GOOGLE_DEVELOPER_KEY = 'YOUR_DEVELOPER_KEY_HERE';
+
 
 // NOTE: The Spreadsheet ID is no longer configured here.
 // The application will now ask each user for their own Spreadsheet URL

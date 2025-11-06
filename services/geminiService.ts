@@ -1,9 +1,12 @@
 
-
 import { GoogleGenAI, Type } from "@google/genai";
 
-// FIX: Updated GoogleGenAI initialization to strictly use the API key from environment variables as per guidelines.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Ensure the API key is available. In a real app, this should be handled securely.
+if (!process.env.API_KEY) {
+  console.warn("API_KEY environment variable not set. Using a placeholder.");
+}
+
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "YOUR_API_KEY_HERE" });
 
 const responseSchema = {
     type: Type.OBJECT,

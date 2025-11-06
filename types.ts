@@ -1,3 +1,4 @@
+
 export interface JournalEntry {
   id: string;
   row: number; // The row number in the Google Sheet for direct updates
@@ -22,4 +23,9 @@ export type View = 'journal' | 'live-chat';
 export interface TranscriptEntry {
   source: 'user' | 'ai' | 'system';
   text: string;
+}
+
+export interface JournalSheet {
+  id: string;
+  name: string;
 }

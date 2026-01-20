@@ -1,6 +1,7 @@
+
 import React, { useState } from 'react';
 import { createJournalSheet } from '../services/googleSheetsService';
-import * as GoogleApiService from '../services/googleApiService';
+import { DrivePickerModal } from './DrivePickerModal';
 import type { JournalSheet } from '../types';
 
 interface SetupScreenProps {
@@ -9,7 +10,7 @@ interface SetupScreenProps {
 
 export const SetupScreen: React.FC<SetupScreenProps> = ({ onJournalConfigured }) => {
     const [isCreating, setIsCreating] = useState(false);
-    const [isOpening, setIsOpening] = useState(false);
+    const [isPickerOpen, setIsPickerOpen] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [journalSlug, setJournalSlug] = useState('');
 
@@ -31,23 +32,6 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onJournalConfigured })
         }
     };
 
-    const handleOpenPicker = async () => {
-        setIsOpening(true);
-        setError(null);
-        try {
-            const selectedSheet = await GoogleApiService.showPicker();
-            onJournalConfigured(selectedSheet);
-        } catch (err) {
-            if (err instanceof Error && !err.message.includes('cancelled')) {
-                 setError(err.message);
-            }
-        } finally {
-            setIsOpening(false);
-        }
-    };
-
-    const isLoading = isCreating || isOpening;
-
     return (
         <div className="flex items-center justify-center min-h-screen bg-slate-100 dark:bg-slate-900 px-4">
             <div className="w-full max-w-md p-8 bg-white dark:bg-slate-800 rounded-lg shadow-xl">
@@ -64,11 +48,11 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onJournalConfigured })
                         onChange={(e) => setJournalSlug(e.target.value)}
                         placeholder="e.g., Daily Reflections"
                         className="w-full p-3 rounded-md bg-slate-100 dark:bg-slate-700 border-transparent focus:ring-2 focus:ring-blue-500 focus:border-transparent transition text-center"
-                        disabled={isLoading}
+                        disabled={isCreating}
                     />
                     <button
                         onClick={handleCreateSheet}
-                        disabled={isLoading || !journalSlug.trim()}
+                        disabled={isCreating || !journalSlug.trim()}
                         className="w-full px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors"
                     >
                         {isCreating ? 'Creating...' : 'Create New Journal'}
@@ -82,11 +66,10 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onJournalConfigured })
                 </div>
 
                 <button
-                    onClick={handleOpenPicker}
-                    disabled={isLoading}
-                    className="w-full px-6 py-3 border border-slate-300 dark:border-slate-600 text-base font-medium rounded-md text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-slate-200 disabled:cursor-not-allowed transition-colors"
+                    onClick={() => setIsPickerOpen(true)}
+                    className="w-full px-6 py-3 border border-slate-300 dark:border-slate-600 text-base font-medium rounded-md text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
                 >
-                    {isOpening ? 'Opening Google Drive...' : 'Open Existing Journal'}
+                    Open Existing Journal
                 </button>
 
                 {error && (
@@ -96,6 +79,15 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onJournalConfigured })
                     </div>
                 )}
             </div>
+
+            <DrivePickerModal 
+                isOpen={isPickerOpen}
+                onClose={() => setIsPickerOpen(false)}
+                onSelect={(sheet) => {
+                    setIsPickerOpen(false);
+                    onJournalConfigured(sheet);
+                }}
+            />
         </div>
     );
 };

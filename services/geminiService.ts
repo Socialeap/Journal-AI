@@ -1,13 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-// Ensure the API key is available. In a real app, this should be handled securely.
-if (!process.env.API_KEY) {
-  console.warn("API_KEY environment variable not set. Using a placeholder.");
-}
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "YOUR_API_KEY_HERE" });
-
 const responseSchema = {
     type: Type.OBJECT,
     properties: {
@@ -59,11 +52,19 @@ interface AIData {
 
 
 export const generateSummaryAndInsight = async (entry: string): Promise<AIData | null> => {
+    // Initialize the client inside the function to ensure process.env.API_KEY is available at runtime.
+    if (!process.env.API_KEY) {
+        console.error("API_KEY environment variable not set. Please ensure you have configured your API key.");
+        return null;
+    }
+
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
     try {
         const prompt = `Analyze the following journal entry. Classify its type, and if it's a task, extract its status, due date, and priority. Provide a JSON response with a summary, an insight, relevant tags, and the classification details. Entry:\n\n"${entry}"`;
         
         const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3-flash-preview",
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
@@ -71,8 +72,12 @@ export const generateSummaryAndInsight = async (entry: string): Promise<AIData |
             },
         });
         
-        const jsonText = response.text.trim();
-        const data = JSON.parse(jsonText);
+        const jsonText = response.text;
+        if (!jsonText) {
+             throw new Error("No text returned from model.");
+        }
+
+        const data = JSON.parse(jsonText.trim());
         
         // Ensure the returned data conforms to the AIData interface
         return {

@@ -1,11 +1,11 @@
+
 // This service handles the Google Sign-In and authentication logic.
 import { GOOGLE_CLIENT_ID, GOOGLE_DEVELOPER_KEY } from '../config';
 
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive';
+const TOKEN_STORAGE_KEY = 'google_access_token';
+const EXPIRY_STORAGE_KEY = 'google_token_expiry';
 
-// FIX: Replaced `declare const google: any` with a more specific type declaration
-// for the Google Identity Services client to resolve TypeScript errors.
-// This object is provided by the Google Identity Services script loaded in the browser.
 declare namespace google {
   namespace accounts {
     namespace oauth2 {
@@ -14,6 +14,7 @@ declare namespace google {
       }
       interface TokenResponse {
         access_token: string;
+        expires_in: number;
       }
       interface TokenClientConfig {
         client_id: string;
@@ -29,12 +30,49 @@ declare namespace google {
 let tokenClient: google.accounts.oauth2.TokenClient | null = null;
 let accessToken: string | null = null;
 
-// Callback function to initialize the Google API client
-export const initClient = (callback: () => void) => {
-    if (typeof google === 'undefined' || typeof google.accounts === 'undefined') {
-        console.error("Google Identity Services script not loaded.");
-        return;
+// Wait for the Google Identity Services script to load
+const waitForGoogleScript = (): Promise<void> => {
+    return new Promise((resolve) => {
+        if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+            resolve();
+            return;
+        }
+        const interval = setInterval(() => {
+            if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+                clearInterval(interval);
+                resolve();
+            }
+        }, 100);
+    });
+};
+
+// Helper to save token to localStorage
+const saveToken = (token: string, expiresInSeconds: number) => {
+    const expiryTime = Date.now() + (expiresInSeconds * 1000);
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    localStorage.setItem(EXPIRY_STORAGE_KEY, expiryTime.toString());
+};
+
+// Helper to load token from localStorage
+const loadToken = (): string | null => {
+    const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+    const expiry = localStorage.getItem(EXPIRY_STORAGE_KEY);
+    
+    if (token && expiry) {
+        // Check if token is still valid (with 1 minute buffer)
+        if (Date.now() < parseInt(expiry, 10) - 60000) {
+            return token;
+        }
     }
+    // Clear if invalid or expired
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(EXPIRY_STORAGE_KEY);
+    return null;
+};
+
+// Callback function to initialize the Google API client
+export const initClient = async (callback: () => void) => {
+    await waitForGoogleScript();
 
     tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: GOOGLE_CLIENT_ID,
@@ -42,15 +80,28 @@ export const initClient = (callback: () => void) => {
         callback: (tokenResponse) => {
             if (tokenResponse && tokenResponse.access_token) {
                 accessToken = tokenResponse.access_token;
+                saveToken(tokenResponse.access_token, tokenResponse.expires_in || 3599);
                 callback();
             }
         },
     });
+
+    // Attempt to restore session from storage
+    const storedToken = loadToken();
+    if (storedToken) {
+        accessToken = storedToken;
+        callback();
+    }
 };
 
 export const signIn = () => {
     if (!tokenClient) {
-        throw new Error('Google API client not initialized.');
+        console.error('Google API client not initialized. Waiting for script...');
+        // Try to re-init if called prematurely
+        initClient(() => {}).then(() => {
+             tokenClient?.requestAccessToken({ prompt: 'consent' });
+        });
+        return;
     }
     // Prompt the user to select a Google Account and ask for consent to share their data
     // when establishing a new session.
@@ -63,6 +114,8 @@ export const signOut = () => {
             console.log('Access token revoked.');
         });
         accessToken = null;
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(EXPIRY_STORAGE_KEY);
     }
 };
 
@@ -82,7 +135,17 @@ let pickerApiLoaded = false;
 const loadPickerApi = (): Promise<void> => {
     return new Promise((resolve, reject) => {
         if (typeof (window as any).gapi === 'undefined') {
-            return reject(new Error("Google API script (gapi) not loaded."));
+            // Check if gapi is loaded, if not, wait a bit
+             const interval = setInterval(() => {
+                if (typeof (window as any).gapi !== 'undefined') {
+                    clearInterval(interval);
+                    (window as any).gapi.load('picker', { 'callback': () => {
+                        pickerApiLoaded = true;
+                        resolve();
+                    }});
+                }
+            }, 100);
+            return;
         }
         (window as any).gapi.load('picker', { 'callback': () => {
             pickerApiLoaded = true;

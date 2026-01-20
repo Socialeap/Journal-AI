@@ -12,8 +12,8 @@ interface LiveChatViewProps {
 const TranscriptLine: React.FC<{ entry: TranscriptEntry }> = ({ entry }) => {
     if (entry.source === 'system') {
         return (
-            <div className="text-center my-2">
-                <span className="px-3 py-1 bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 text-xs rounded-full">
+            <div className="text-center my-3">
+                <span className="inline-block px-4 py-1.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-sm font-medium rounded-full shadow-sm">
                     {entry.text}
                 </span>
             </div>
@@ -23,10 +23,10 @@ const TranscriptLine: React.FC<{ entry: TranscriptEntry }> = ({ entry }) => {
     return (
         <div className={`flex ${entry.source === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
-                className={`max-w-md p-3 rounded-lg ${
+                className={`max-w-[85%] md:max-w-md p-4 rounded-2xl text-lg leading-relaxed shadow-sm ${
                 entry.source === 'user'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200'
+                    ? 'bg-blue-600 text-white rounded-br-none'
+                    : 'bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-200 dark:border-slate-600'
                 }`}
             >
                 {entry.text}
@@ -43,6 +43,7 @@ export const LiveChatView: React.FC<LiveChatViewProps> = ({ spreadsheetId }) => 
     micVolume,
     startSession,
     stopSession,
+    errorMessage
   } = useGeminiLive(spreadsheetId);
 
   const getButtonState = () => {
@@ -56,7 +57,7 @@ export const LiveChatView: React.FC<LiveChatViewProps> = ({ spreadsheetId }) => 
       case 'PROCESSING':
         return { text: 'Processing...', color: 'bg-purple-500', disabled: true };
       case 'ERROR':
-        return { text: 'Error - Click to Restart', color: 'bg-red-600 hover:bg-red-700', disabled: false };
+        return { text: 'Error - Tap to Retry', color: 'bg-red-600 hover:bg-red-700', disabled: false };
       default:
         return { text: 'Start', color: 'bg-slate-500', disabled: true };
     }
@@ -65,28 +66,42 @@ export const LiveChatView: React.FC<LiveChatViewProps> = ({ spreadsheetId }) => 
   const { text, color, disabled } = getButtonState();
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <div className="h-96 bg-slate-50 dark:bg-slate-800 rounded-lg p-4 space-y-4 overflow-y-auto flex flex-col-reverse">
-        {transcript.length === 0 && (
-          <div className="flex-grow flex items-center justify-center">
-            <p className="text-slate-500 dark:text-slate-400">
-              The conversation transcript will appear here.
+    <div className="max-w-2xl mx-auto h-[calc(100vh-140px)] flex flex-col">
+      <div className="flex-grow bg-slate-50 dark:bg-slate-800 rounded-2xl p-4 md:p-6 space-y-6 overflow-y-auto flex flex-col-reverse shadow-inner">
+        {transcript.length === 0 && sessionState !== 'ERROR' && (
+          <div className="flex-grow flex flex-col items-center justify-center text-center p-8 opacity-60">
+            <MicIcon className="w-16 h-16 text-slate-400 mb-4" />
+            <p className="text-xl font-medium text-slate-500 dark:text-slate-400">
+              Tap the microphone to start chatting with your AI Journal Assistant.
             </p>
           </div>
         )}
-        <div className="space-y-4">
+
+        {sessionState === 'ERROR' && errorMessage && (
+            <div className="flex-grow flex flex-col items-center justify-center text-center p-8">
+                <div className="bg-red-50 dark:bg-red-900/30 p-6 rounded-xl border border-red-200 dark:border-red-800">
+                    <p className="text-lg font-semibold text-red-600 dark:text-red-300 mb-2">Connection Issue</p>
+                    <p className="text-slate-700 dark:text-slate-300">{errorMessage}</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400 mt-4">
+                        Tip: Close any active chat bubbles or screen overlays from other apps.
+                    </p>
+                </div>
+            </div>
+        )}
+
+        <div className="space-y-6">
           {[...transcript].reverse().map((entry, index) => (
             <TranscriptLine key={index} entry={entry} />
           ))}
         </div>
       </div>
 
-      <div className="mt-8 flex flex-col items-center">
+      <div className="mt-6 flex flex-col items-center shrink-0">
         <div className="h-12 flex items-center justify-center mb-4">
             {sessionState === 'LISTENING' ? (
                 <VoiceVisualizer volume={micVolume} />
             ) : (
-                <span className="text-slate-500 dark:text-slate-400">
+                <span className="text-lg font-medium text-slate-600 dark:text-slate-300">
                     {sessionState === 'IDLE' ? 'Click to start' : text}
                 </span>
             )}
@@ -95,9 +110,13 @@ export const LiveChatView: React.FC<LiveChatViewProps> = ({ spreadsheetId }) => 
             onClick={sessionState === 'IDLE' || sessionState === 'ERROR' ? startSession : stopSession}
             disabled={disabled}
             aria-label={sessionState === 'IDLE' ? 'Start conversation' : 'Stop conversation'}
-            className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 ${color} text-white shadow-lg focus:outline-none focus:ring-4 focus:ring-offset-2 dark:focus:ring-offset-slate-900 ${
-                sessionState === 'LISTENING' ? 'ring-4 ring-green-400/50' : `focus:ring-blue-500/50`
+            className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 ${color} text-white shadow-xl focus:outline-none focus:ring-4 focus:ring-offset-4 dark:focus:ring-offset-slate-900 ${
+                sessionState === 'LISTENING' ? 'ring-4 ring-green-400/50 scale-105' : `focus:ring-blue-500/50`
             }`}
         >
-          <MicIcon className="w-8 h-8" />
-        
+          <MicIcon className="w-10 h-10" />
+        </button>
+      </div>
+    </div>
+  );
+};

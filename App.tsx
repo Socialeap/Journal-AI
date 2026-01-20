@@ -1,11 +1,14 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { LoginScreen } from './components/LoginScreen';
 import { JournalView } from './components/JournalView';
 import { LiveChatView } from './components/LiveChatView';
+import { DashboardView } from './components/DashboardView';
 import { Header } from './components/Header';
 import { SetupScreen } from './components/SetupScreen';
-import type { View, JournalSheet } from './types';
+import type { View, JournalSheet, JournalEntry } from './types';
 import * as GoogleApiService from './services/googleApiService';
+import { getJournalEntries } from './services/googleSheetsService';
 
 type AppState = 'initializing' | 'login' | 'setup' | 'viewing_journal';
 
@@ -13,7 +16,14 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('initializing');
   const [journalSheets, setJournalSheets] = useState<JournalSheet[]>([]);
   const [activeJournalId, setActiveJournalId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<View>('journal');
+  // Default to 'live-chat' as requested for the initial startup page
+  const [activeView, setActiveView] = useState<View>('live-chat');
+  
+  // Shared State: Lifted from JournalView to enable Dashboard integration
+  const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [isLoadingEntries, setIsLoadingEntries] = useState(false);
+  const [entriesError, setEntriesError] = useState<string | null>(null);
+  const [focusedEntryId, setFocusedEntryId] = useState<string | null>(null);
 
   const loadFromStorage = useCallback((): boolean => {
     try {
@@ -51,15 +61,39 @@ const App: React.FC = () => {
   }, [loadFromStorage]);
   
   useEffect(() => {
-    GoogleApiService.initClient(updateAuthState);
-    // The GSI library might automatically sign in the user.
-    // The updateAuthState callback will handle the transition.
-    // We'll transition to login state for now, which shows the login button
-    // until the GSI library confirms authentication status.
-    if (!GoogleApiService.isUserSignedIn()) {
-      setAppState('login');
-    }
+    const init = async () => {
+        // Initialize client and check for stored session
+        await GoogleApiService.initClient(updateAuthState);
+        
+        // Only set to login if not signed in after init check
+        if (!GoogleApiService.isUserSignedIn()) {
+            setAppState('login');
+        }
+    };
+    init();
   }, [updateAuthState]);
+
+  // Shared Data Fetching Logic
+  const fetchEntries = useCallback(async () => {
+    if (!activeJournalId || appState !== 'viewing_journal') return;
+    
+    setIsLoadingEntries(true);
+    setEntriesError(null);
+    try {
+        const fetchedEntries = await getJournalEntries(activeJournalId);
+        setEntries(fetchedEntries);
+    } catch (error) {
+        console.error("Failed to fetch entries:", error);
+        setEntriesError(error instanceof Error ? error.message : "An unknown error occurred.");
+    } finally {
+        setIsLoadingEntries(false);
+    }
+  }, [activeJournalId, appState]);
+
+  // Fetch entries whenever the journal changes or we enter viewing mode
+  useEffect(() => {
+    fetchEntries();
+  }, [fetchEntries]);
 
   const handleSignIn = () => {
     GoogleApiService.signIn();
@@ -70,6 +104,7 @@ const App: React.FC = () => {
     localStorage.clear();
     setJournalSheets([]);
     setActiveJournalId(null);
+    setEntries([]); // Clear sensitive data
     setAppState('login');
   };
   
@@ -89,6 +124,14 @@ const App: React.FC = () => {
   const handleSwitchJournal = (id: string) => {
     setActiveJournalId(id);
     localStorage.setItem('activeJournalId', id);
+    // When switching journals, we generally stay on the current view, 
+    // but resetting entries is important.
+    setEntries([]); 
+  };
+
+  // Drill-Down Logic: Navigation from Dashboard to Journal
+  const handleNavigateToEntry = (id: string) => {
+    setFocusedEntryId(id);
     setActiveView('journal');
   };
 
@@ -117,9 +160,32 @@ const App: React.FC = () => {
               onAddNewJournal={() => setAppState('setup')}
             />
             <main className="flex-grow p-4 md:p-8">
-              <div className="max-w-4xl mx-auto">
-                {activeJournalId && activeView === 'journal' && <JournalView spreadsheetId={activeJournalId} />}
-                {activeJournalId && activeView === 'live-chat' && <LiveChatView spreadsheetId={activeJournalId} />}
+              <div className="max-w-6xl mx-auto">
+                {activeJournalId && activeView === 'journal' && (
+                  <JournalView 
+                    spreadsheetId={activeJournalId} 
+                    entries={entries}
+                    isLoading={isLoadingEntries}
+                    error={entriesError}
+                    onRefresh={fetchEntries}
+                    focusedEntryId={focusedEntryId}
+                    onClearFocus={() => setFocusedEntryId(null)}
+                    onUpdateEntries={setEntries} // Pass setter for optimistic updates
+                  />
+                )}
+                {activeJournalId && activeView === 'live-chat' && (
+                  <LiveChatView spreadsheetId={activeJournalId} />
+                )}
+                {activeJournalId && activeView === 'dashboard' && (
+                   <DashboardView 
+                      spreadsheetId={activeJournalId} 
+                      entries={entries} 
+                      isLoading={isLoadingEntries}
+                      error={entriesError}
+                      onRefresh={fetchEntries}
+                      onNavigate={handleNavigateToEntry}
+                   />
+                )}
               </div>
             </main>
           </div>

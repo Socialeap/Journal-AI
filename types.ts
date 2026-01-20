@@ -6,7 +6,8 @@ export interface JournalEntry {
   entry: string;
   tags: string[];
   type: 'personal' | 'work' | 'task' | 'note';
-  taskStatus: 'todo' | 'in-progress' | 'done' | 'none'; // Corresponds to "Status" for tasks
+  // Updated status types to match new requirements
+  taskStatus: 'Pending ✨' | 'Extended ⏳' | 'Completed ✔️' | 'Neglected ⚠️' | 'Archived 🗄️' | 'none'; 
   dueDate: string | null;
   priority: 'low' | 'medium' | 'high' | 'none';
   
@@ -18,7 +19,7 @@ export interface JournalEntry {
   status: 'new' | 'analyzing' | 'complete';
 }
 
-export type View = 'journal' | 'live-chat';
+export type View = 'journal' | 'live-chat' | 'dashboard';
 
 export interface TranscriptEntry {
   source: 'user' | 'ai' | 'system';

@@ -10,6 +10,38 @@ const FOLDER_NAME = 'AI Journal';
 // Helper to construct API URLs dynamically
 const getSheetsApiUrl = (spreadsheetId: string, path: string) => `${SHEETS_API_BASE_URL}/${spreadsheetId}${path}`;
 
+// Retry helper for robust API calls
+const fetchWithRetry = async (url: string, options: RequestInit, retries = 3, backoff = 1000): Promise<Response> => {
+    try {
+        const response = await fetch(url, options);
+        
+        // If successful, return immediately
+        if (response.ok) return response;
+        
+        // If client error (4xx) other than 429, do not retry.
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+            return response;
+        }
+
+        // Retry on 5xx (server errors) or 429 (rate limiting)
+        if (retries > 0) {
+            console.warn(`Request failed with status ${response.status}. Retrying in ${backoff}ms...`);
+            await new Promise(resolve => setTimeout(resolve, backoff));
+            return fetchWithRetry(url, options, retries - 1, backoff * 2);
+        }
+        
+        return response;
+    } catch (error) {
+        // Retry on network errors (e.g., DNS failure, offline)
+        if (retries > 0) {
+            console.warn(`Network request failed. Retrying in ${backoff}ms...`, error);
+            await new Promise(resolve => setTimeout(resolve, backoff));
+            return fetchWithRetry(url, options, retries - 1, backoff * 2);
+        }
+        throw error;
+    }
+};
+
 // Gets the ID of the 'AI Journal' folder, creating it if it doesn't exist.
 // This function is now self-healing: it verifies the stored ID is valid before using it.
 const getOrCreateJournalFolderId = async (): Promise<string> => {
@@ -20,7 +52,7 @@ const getOrCreateJournalFolderId = async (): Promise<string> => {
 
     // If we have a stored ID, verify it still exists in Google Drive.
     if (storedFolderId) {
-        const verifyResponse = await fetch(`${DRIVE_API_BASE_URL}/${storedFolderId}?fields=id`, {
+        const verifyResponse = await fetchWithRetry(`${DRIVE_API_BASE_URL}/${storedFolderId}?fields=id`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
         
@@ -35,7 +67,7 @@ const getOrCreateJournalFolderId = async (): Promise<string> => {
     // If we don't have a valid ID by now, create a new folder.
     if (!storedFolderId) {
         console.log("Creating new 'AI Journal' folder in Google Drive.");
-        const createFolderResponse = await fetch(DRIVE_API_BASE_URL, {
+        const createFolderResponse = await fetchWithRetry(DRIVE_API_BASE_URL, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${accessToken}`,
@@ -67,7 +99,7 @@ export const createJournalSheet = async (journalName: string): Promise<string> =
     const folderId = await getOrCreateJournalFolderId();
 
     // 1. Create the spreadsheet within the folder using the Drive API
-    const createSheetResponse = await fetch(DRIVE_API_BASE_URL, {
+    const createSheetResponse = await fetchWithRetry(DRIVE_API_BASE_URL, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${accessToken}`,
@@ -113,6 +145,32 @@ export const createJournalSheet = async (journalName: string): Promise<string> =
                     fields: 'userEnteredValue,userEnteredFormat.textFormat.bold',
                 }
             },
+            // Validation for Status (Column F / Index 5)
+            {
+                setDataValidation: {
+                    range: {
+                        sheetId: 0,
+                        startRowIndex: 1, // Start after header
+                        startColumnIndex: 5, // Column F
+                        endColumnIndex: 6,
+                    },
+                    rule: {
+                        condition: {
+                            type: 'ONE_OF_LIST',
+                            values: [
+                                { userEnteredValue: 'Pending ✨' },
+                                { userEnteredValue: 'Extended ⏳' },
+                                { userEnteredValue: 'Completed ✔️' },
+                                { userEnteredValue: 'Neglected ⚠️' },
+                                { userEnteredValue: 'Archived 🗄️' },
+                            ]
+                        },
+                        strict: false, 
+                        showCustomUi: true,
+                    }
+                }
+            },
+            // Validation for Priority (Column H / Index 7)
             {
                 setDataValidation: {
                     range: {
@@ -139,7 +197,7 @@ export const createJournalSheet = async (journalName: string): Promise<string> =
         ]
     };
 
-    const batchUpdateResponse = await fetch(getSheetsApiUrl(spreadsheetId, ':batchUpdate'), {
+    const batchUpdateResponse = await fetchWithRetry(getSheetsApiUrl(spreadsheetId, ':batchUpdate'), {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${accessToken}`,
@@ -155,6 +213,32 @@ export const createJournalSheet = async (journalName: string): Promise<string> =
     return spreadsheetId;
 };
 
+// Lists ALL spreadsheets visible to the user, ordered by last modified.
+// Used for the custom file picker.
+export const listAllSpreadsheets = async (): Promise<JournalSheet[]> => {
+    const accessToken = GoogleApiService.getAccessToken();
+    if (!accessToken) throw new Error('Not authenticated');
+
+    // Query for all spreadsheets, not trashed
+    const query = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
+    const searchUrl = `${DRIVE_API_BASE_URL}?q=${encodeURIComponent(query)}&orderBy=modifiedTime desc&pageSize=50&fields=files(id,name,modifiedTime)`;
+    
+    const response = await fetchWithRetry(searchUrl, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to fetch files from Google Drive.');
+    }
+
+    const data = await response.json();
+    if (!data.files) {
+        return [];
+    }
+
+    return data.files.map((file: { id: string; name: string }) => ({ id: file.id, name: file.name }));
+};
+
 export const findJournalSheetsInDrive = async (): Promise<JournalSheet[]> => {
     const accessToken = GoogleApiService.getAccessToken();
     if (!accessToken) throw new Error('Not authenticated');
@@ -162,7 +246,7 @@ export const findJournalSheetsInDrive = async (): Promise<JournalSheet[]> => {
     const folderQuery = "mimeType='application/vnd.google-apps.folder' and name='AI Journal' and trashed=false";
     const folderSearchUrl = `${DRIVE_API_BASE_URL}?q=${encodeURIComponent(folderQuery)}&fields=files(id)`;
     
-    const folderResponse = await fetch(folderSearchUrl, {
+    const folderResponse = await fetchWithRetry(folderSearchUrl, {
         headers: { 'Authorization': `Bearer ${accessToken}` }
     });
     if (!folderResponse.ok) throw new Error('Failed to search for AI Journal folder.');
@@ -178,7 +262,7 @@ export const findJournalSheetsInDrive = async (): Promise<JournalSheet[]> => {
     const sheetQuery = `'${folderId}' in parents and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`;
     const sheetSearchUrl = `${DRIVE_API_BASE_URL}?q=${encodeURIComponent(sheetQuery)}&fields=files(id,name)`;
     
-    const sheetsResponse = await fetch(sheetSearchUrl, {
+    const sheetsResponse = await fetchWithRetry(sheetSearchUrl, {
          headers: { 'Authorization': `Bearer ${accessToken}` }
     });
     if (!sheetsResponse.ok) throw new Error('Failed to search for journals in folder.');
@@ -204,6 +288,23 @@ const COLUMN_MAP: { [key: string]: string } = {
     aiInsight: 'J'
 };
 
+// Helper function to normalize priority values for app usage (lowercase)
+const normalizePriority = (p: string | null): JournalEntry['priority'] => {
+    if (!p) return 'none';
+    const lower = p.toLowerCase();
+    if (['high', 'medium', 'low', 'none'].includes(lower)) return lower as JournalEntry['priority'];
+    return 'none';
+};
+
+// Helper function to format priority values for Google Sheets (Capitalized)
+// This ensures we match the Data Validation rules: Critical, High, Medium, Low
+const formatPriorityForSheet = (p: string | null | undefined): string => {
+    if (!p || p.toLowerCase() === 'none') return ''; // Return empty string for 'none' to avoid validation errors
+    // Capitalize first letter
+    return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+};
+
+
 // Maps a row from Google Sheets (array of strings) to a JournalEntry object
 const mapRowToEntry = (row: any[], index: number): JournalEntry => {
     const [
@@ -212,7 +313,7 @@ const mapRowToEntry = (row: any[], index: number): JournalEntry => {
         entry = '',
         tags = '',
         type = 'note',
-        taskStatus = 'none',
+        rawStatus = 'none',
         dueDate = null,
         priority = 'none',
         aiSummary = null,
@@ -221,6 +322,25 @@ const mapRowToEntry = (row: any[], index: number): JournalEntry => {
 
     const parsedTags = tags ? String(tags).split(',').map(t => t.trim()) : [];
     const hasAiContent = aiSummary || aiInsight;
+
+    // Migrate old values to new Emoji values if necessary
+    let taskStatus = rawStatus;
+    if (taskStatus === 'todo') taskStatus = 'Pending ✨';
+    if (taskStatus === 'in-progress') taskStatus = 'Pending ✨'; // Map old in-progress to Pending for simplicity
+    if (taskStatus === 'NEW ✨') taskStatus = 'Pending ✨'; // Migration from previous step
+    if (taskStatus === 'done') taskStatus = 'Completed ✔️';
+    
+    // Auto-detect "Neglected ⚠️"
+    // If there is a due date, it's not completed/archived, and the date is in the past.
+    if (dueDate && taskStatus !== 'Completed ✔️' && taskStatus !== 'Archived 🗄️') {
+        const today = new Date();
+        today.setHours(0,0,0,0);
+        const due = new Date(dueDate);
+        // We compare timestamps to avoid timezone complexity issues for simple dates
+        if (!isNaN(due.getTime()) && due < today) {
+            taskStatus = 'Neglected ⚠️';
+        }
+    }
 
     return {
         row: index + 2, // +1 for 0-based index, +1 for header row
@@ -231,7 +351,7 @@ const mapRowToEntry = (row: any[], index: number): JournalEntry => {
         type: type as JournalEntry['type'],
         taskStatus: taskStatus as JournalEntry['taskStatus'],
         dueDate,
-        priority: priority as JournalEntry['priority'],
+        priority: normalizePriority(priority),
         aiSummary,
         aiInsight,
         status: hasAiContent ? 'complete' : 'new',
@@ -243,7 +363,7 @@ export const getJournalEntries = async (spreadsheetId: string): Promise<JournalE
     const accessToken = GoogleApiService.getAccessToken();
     if (!accessToken) throw new Error('Not authenticated');
 
-    const response = await fetch(getSheetsApiUrl(spreadsheetId, `/values/${SHEET_NAME}!A:J`), {
+    const response = await fetchWithRetry(getSheetsApiUrl(spreadsheetId, `/values/${SHEET_NAME}!A:J`), {
         headers: {
             'Authorization': `Bearer ${accessToken}`,
         },
@@ -259,7 +379,10 @@ export const getJournalEntries = async (spreadsheetId: string): Promise<JournalE
         if (response.status === 404) {
              throw new Error(`Spreadsheet not found. Make sure the ID is correct.`);
         }
-        throw new Error('Failed to fetch from Google Sheets');
+        if (response.status === 503) {
+            throw new Error(`Google Sheets Service Unavailable (503). Please try again later.`);
+        }
+        throw new Error(`Failed to fetch from Google Sheets (Status: ${response.status})`);
     }
 
     const data = await response.json();
@@ -301,14 +424,20 @@ export const updateJournalEntry = async (
         throw new Error(`Invalid field provided for update: ${field}`);
     }
 
+    let valueToSend = value;
+    // Special handling for Priority to ensure it matches Data Validation (Capitalized)
+    if (field === 'priority') {
+        valueToSend = formatPriorityForSheet(value);
+    }
+
     const range = `${SHEET_NAME}!${column}${row}`;
-    const response = await fetch(getSheetsApiUrl(spreadsheetId, `/values/${range}?valueInputOption=USER_ENTERED`), {
+    const response = await fetchWithRetry(getSheetsApiUrl(spreadsheetId, `/values/${range}?valueInputOption=USER_ENTERED`), {
         method: 'PUT',
         headers: {
             'Authorization': `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ values: [[value]] }),
+        body: JSON.stringify({ values: [[valueToSend]] }),
     });
 
     if (!response.ok) {
@@ -316,18 +445,42 @@ export const updateJournalEntry = async (
     }
 };
 
+export interface EntryMetadata {
+    type?: JournalEntry['type'];
+    taskStatus?: JournalEntry['taskStatus'];
+    priority?: JournalEntry['priority'];
+    dueDate?: string | null;
+}
 
-
-export const addJournalEntry = async (spreadsheetId: string, id: string, entryText: string): Promise<void> => {
+/**
+ * Appends a journal entry and returns the row number where it was added.
+ */
+export const addJournalEntry = async (
+    spreadsheetId: string, 
+    id: string, 
+    entryText: string,
+    metadata: EntryMetadata = {}
+): Promise<number> => {
     const accessToken = GoogleApiService.getAccessToken();
     if (!accessToken) throw new Error('Not authenticated');
 
     const timestamp = new Date().toISOString();
+    
+    // Extract metadata with defaults
+    const { 
+        type = 'note', 
+        taskStatus = 'none', 
+        priority = 'none', 
+        dueDate = null 
+    } = metadata;
+
+    const formattedPriority = formatPriorityForSheet(priority);
+
     const values = [
-        [id, timestamp, entryText, '', 'note', 'none', null, 'none', null, null]
+        [id, timestamp, entryText, '', type, taskStatus, dueDate, formattedPriority, null, null]
     ];
 
-    const response = await fetch(getSheetsApiUrl(spreadsheetId, `/values/${SHEET_NAME}!A:J:append?valueInputOption=USER_ENTERED`), {
+    const response = await fetchWithRetry(getSheetsApiUrl(spreadsheetId, `/values/${SHEET_NAME}!A:J:append?valueInputOption=USER_ENTERED`), {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${accessToken}`,
@@ -339,6 +492,19 @@ export const addJournalEntry = async (spreadsheetId: string, id: string, entryTe
     if (!response.ok) {
         throw new Error('Failed to add entry to Google Sheets');
     }
+
+    const json = await response.json();
+    // Parse the updatedRange to get the row number (e.g., "Journal!A10:J10")
+    // Format is usually SheetName!ColRow:ColRow
+    const range: string = json.updates?.updatedRange || '';
+    const match = range.match(/[A-Z]+(\d+)/);
+    
+    if (match && match[1]) {
+        return parseInt(match[1], 10);
+    }
+    
+    // Fallback if parsing fails (should rarely happen if API is standard)
+    throw new Error('Entry added, but could not determine row number.');
 };
 
 export const updateEntryWithAI = async (
@@ -357,20 +523,25 @@ export const updateEntryWithAI = async (
     const accessToken = GoogleApiService.getAccessToken();
     if (!accessToken) throw new Error('Not authenticated');
 
+    // MAPPING: Ensure AI 'todo' or 'done' maps to new Emoji strings
+    // Note: The calling code (JournalView) now handles the mapping from 'todo' -> 'Pending ✨', etc.
+    // before calling this function. We just rely on aiData.taskStatus being the correct enum value.
+    const statusToSave = aiData.taskStatus;
+
     // Prepare the row data for the update. We are updating columns D through J.
     const values = [[
         aiData.tags.join(', '),
         aiData.type,
-        aiData.taskStatus,
+        statusToSave,
         aiData.dueDate,
-        aiData.priority,
+        formatPriorityForSheet(aiData.priority), // Format priority for sheet
         aiData.summary,
         aiData.insight
     ]];
 
     const range = `${SHEET_NAME}!D${entry.row}:J${entry.row}`;
 
-    const response = await fetch(getSheetsApiUrl(spreadsheetId, `/values/${range}?valueInputOption=USER_ENTERED`), {
+    const response = await fetchWithRetry(getSheetsApiUrl(spreadsheetId, `/values/${range}?valueInputOption=USER_ENTERED`), {
         method: 'PUT',
         headers: {
             'Authorization': `Bearer ${accessToken}`,
